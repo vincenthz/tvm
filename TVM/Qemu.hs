@@ -15,7 +15,6 @@ import Data.Data
 import Data.Maybe
 import Data.List
 import Data.Aeson ()
-import Data.Aeson.Generic
 import qualified Data.ByteString.Lazy as B
 import System.FilePath
 import System.Directory
