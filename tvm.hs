@@ -10,8 +10,7 @@ import TVM.Qemu
 import Data.Data
 import Data.Maybe
 import Data.List
-import Data.Aeson ()
-import Data.Aeson.Generic
+import Data.Aeson as DA (encode, eitherDecode)
 import qualified Data.ByteString.Lazy as B
 import System.Environment
 import System.Exit
@@ -34,9 +33,14 @@ cfgPath tvm name = configDir tvm </> (name ++ ".cfg")
 
 readCfg :: TVMConfig -> Name -> IO (Maybe Qemu)
 readCfg tvm name = do
-    decode <$> B.readFile (cfgPath tvm name)
+    d <- (DA.eitherDecode <$> B.readFile (cfgPath tvm name)) :: IO (Either String Qemu)
+    case d of
+      Left err -> return Nothing
+      Right ps -> return $ Just ps
+
 withCfg tvm name f = readCfg tvm name >>= maybe (return $ error ("cannot open config : " ++ name)) f
-writeCfg tvm name config = B.writeFile (cfgPath tvm name) (encode config)
+
+writeCfg tvm name config = B.writeFile (cfgPath tvm name) (DA.encode config)
 
 listCfg tvm = do
     files <- filter (isSuffixOf ".cfg") <$> getDirectoryContents (configDir tvm)
