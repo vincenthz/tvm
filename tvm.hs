@@ -35,7 +35,7 @@ readCfg :: TVMConfig -> Name -> IO (Maybe Qemu)
 readCfg tvm name = do
     d <- (DA.eitherDecode <$> B.readFile (cfgPath tvm name)) :: IO (Either String Qemu)
     case d of
-      Left err -> return Nothing
+      Left err -> error $ "JSON error (" ++ (cfgPath tvm name) ++ "): " ++ err
       Right ps -> return $ Just ps
 
 withCfg tvm name f = readCfg tvm name >>= maybe (return $ error ("cannot open config : " ++ name)) f
