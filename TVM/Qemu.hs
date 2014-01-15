@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE DeriveGeneric #-}
 -- |
 -- Module      : TVM.Qemu
 -- License     : BSD-style
@@ -11,11 +12,13 @@
 --
 module TVM.Qemu where
 
+import GHC.Generics
+
 import Data.Data
 import Data.Maybe
 import Data.List
 import Data.Aeson ()
-import Data.Aeson.Generic
+import Data.Aeson.Types
 import qualified Data.ByteString.Lazy as B
 import System.FilePath
 import System.Directory
@@ -25,29 +28,29 @@ import Control.Applicative
 import System.Process
 
 data BootOrder = BootDisk | BootCdrom
-    deriving (Show,Read,Eq,Typeable,Data)
+    deriving (Show,Read,Eq,Typeable,Data,Generic)
 data DiskInterface = DiskSCSI | DiskIDE | DiskVirtIO
-    deriving (Show,Read,Eq,Typeable,Data)
+    deriving (Show,Read,Eq,Typeable,Data,Generic)
 data DiskMedia = MediaDisk | MediaCDROM
-    deriving (Show,Read,Eq,Typeable,Data)
+    deriving (Show,Read,Eq,Typeable,Data,Generic)
 
 data Disk = Disk
     { diskFile      :: String
     , diskInterface :: Maybe DiskInterface
     , diskMedia     :: DiskMedia
-    } deriving (Show,Read,Eq,Typeable,Data)
+    } deriving (Show,Read,Eq,Typeable,Data,Generic)
 
 data Nic = Nic
     { nicModel   :: Maybe String
     , nicMacAddr :: Maybe String -- FIXME refine type
     , nicVLAN    :: Maybe Int
-    } deriving (Show,Read,Eq,Typeable,Data)
+    } deriving (Show,Read,Eq,Typeable,Data,Generic)
 
 defaultNic :: Nic
 defaultNic = Nic Nothing Nothing Nothing
 
 data NetFamily = TCP | UDP
-    deriving (Show,Read,Eq,Typeable,Data)
+    deriving (Show,Read,Eq,Typeable,Data,Generic)
 
 -- hostfwd=[tcp|udp]:[hostaddr]:hostport-[guestaddr]:guestport
 data HostFWD = HostFWD
@@ -56,20 +59,20 @@ data HostFWD = HostFWD
     , hostFWDHostPort :: Int
     , hostFWDGuestAddr :: Maybe String
     , hostFWDGuestPort :: Int
-    } deriving (Show,Read,Eq,Typeable,Data)
+    } deriving (Show,Read,Eq,Typeable,Data,Generic)
 
 data Net = NetUser
     { userNetHostFWD :: [HostFWD]
-    } deriving (Show,Read,Eq,Typeable,Data)
+    } deriving (Show,Read,Eq,Typeable,Data,Generic)
 
 data Serial = SerialPipe String
-    deriving (Show,Read,Eq,Typeable,Data)
+    deriving (Show,Read,Eq,Typeable,Data,Generic)
 
 data VGA = VGA_Standard | VGA_Cirrus | VGA_QXL | VGA_VMWare | VGA_None
-    deriving (Show,Read,Eq,Typeable,Data)
+    deriving (Show,Read,Eq,Typeable,Data,Generic)
 
 data QemuArch = ArchX86_64 | ArchI386
-    deriving (Show,Read,Eq,Typeable,Data)
+    deriving (Show,Read,Eq,Typeable,Data,Generic)
 
 data Qemu = Qemu
     { qemuArch    :: QemuArch
@@ -82,7 +85,7 @@ data Qemu = Qemu
     , qemuSerials :: [Serial]
     , qemuVGA     :: VGA
     , qemuVNC     :: Maybe Int
-    } deriving (Show,Read,Eq,Typeable,Data)
+    } deriving (Show,Read,Eq,Typeable,Data,Generic)
 
 defaultQemu = Qemu
     { qemuArch    = ArchX86_64
@@ -96,6 +99,31 @@ defaultQemu = Qemu
     , qemuVGA     = VGA_Standard
     , qemuVNC     = Nothing
     }
+
+instance ToJSON BootOrder
+instance FromJSON BootOrder
+instance ToJSON DiskInterface
+instance FromJSON DiskInterface
+instance ToJSON DiskMedia
+instance FromJSON DiskMedia
+instance ToJSON Disk
+instance FromJSON Disk
+instance ToJSON Nic
+instance FromJSON Nic
+instance ToJSON NetFamily
+instance FromJSON NetFamily
+instance ToJSON HostFWD
+instance FromJSON HostFWD
+instance ToJSON Net
+instance FromJSON Net
+instance ToJSON Serial
+instance FromJSON Serial
+instance ToJSON VGA
+instance FromJSON VGA
+instance ToJSON QemuArch
+instance FromJSON QemuArch
+instance ToJSON Qemu
+instance FromJSON Qemu
 
 class ShowArg a where
     toCLIArg :: a -> String

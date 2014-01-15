@@ -10,8 +10,8 @@ import TVM.Qemu
 import Data.Data
 import Data.Maybe
 import Data.List
-import Data.Aeson ()
-import Data.Aeson.Generic
+import Data.List.Split
+import Data.Aeson as DA (encode, eitherDecode)
 import qualified Data.ByteString.Lazy as B
 import System.Environment
 import System.Exit
@@ -34,9 +34,14 @@ cfgPath tvm name = configDir tvm </> (name ++ ".cfg")
 
 readCfg :: TVMConfig -> Name -> IO (Maybe Qemu)
 readCfg tvm name = do
-    decode <$> B.readFile (cfgPath tvm name)
+    d <- (DA.eitherDecode <$> B.readFile (cfgPath tvm name)) :: IO (Either String Qemu)
+    case d of
+      Left err -> error $ "JSON error (" ++ (cfgPath tvm name) ++ "): " ++ err
+      Right ps -> return $ Just ps
+
 withCfg tvm name f = readCfg tvm name >>= maybe (return $ error ("cannot open config : " ++ name)) f
-writeCfg tvm name config = B.writeFile (cfgPath tvm name) (encode config)
+
+writeCfg tvm name config = B.writeFile (cfgPath tvm name) (DA.encode config)
 
 listCfg tvm = do
     files <- filter (isSuffixOf ".cfg") <$> getDirectoryContents (configDir tvm)
@@ -167,7 +172,54 @@ doStop tvm args = do
 
 doAdd tvm name args = undefined
 doSet tvm name args = undefined
-doGet tvm name args = undefined
+
+doGetQemu cfg ["qemuArch"]            = show $ qemuArch cfg
+doGetQemu cfg ["qemuMemory"]          = show $ qemuMemory cfg
+doGetQemu cfg ["qemuCPUs"]            = show $ qemuCPUs cfg
+doGetQemu cfg ["qemuBoot"]            = show $ qemuBoot cfg
+doGetQemu cfg ["qemuDrives"]          = show $ length $ qemuDrives cfg
+doGetQemu cfg ["qemuDrives",index]    = show $ (qemuDrives cfg)!!(read index)
+doGetQemu cfg ("qemuDrives":index:xs) =
+    doGetQemuDrive ((qemuDrives cfg)!!(read index)) xs
+    where doGetQemuDrive driveCfg ["diskFile"]      = show $ diskFile driveCfg
+          doGetQemuDrive driveCfg ["diskInterface"] = show $ diskInterface driveCfg
+          doGetQemuDrive driveCfg ["diskMedia"]     = show $ diskMedia driveCfg
+          doGetQemuDrive _ list                     = "not supported"
+doGetQemu cfg ["qemuNics"]            = show $ length $ qemuNics cfg
+doGetQemu cfg ["qemuNics",index]      = show $ (qemuNics cfg)!!(read index)
+doGetQemu cfg ("qemuNics":index:xs)   =
+    doGetQemuNics ((qemuNics cfg)!!(read index)) xs
+    where doGetQemuNics nicCfg ["nicModel"]   = show $ nicModel nicCfg
+          doGetQemuNics nicCfg ["nicMacAddr"] = show $ nicMacAddr nicCfg
+          doGetQemuNics nicCfg ["nicVLAN"]    = show $ nicVLAN nicCfg
+          doGetQemuNics _      list           = "not supported"
+doGetQemu cfg ["qemuNets"]            = show $ length $ qemuNets cfg
+doGetQemu cfg ["qemuNets",index]      = show $ (qemuNets cfg)!!(read index)
+doGetQemu cfg ("qemuNets":index:xs)   =
+    doGetQemuNet ((qemuNets cfg)!!(read index)) xs
+    where doGetQemuNet netCfg ["userNetHostFWD"]      = show $ length $ userNetHostFWD netCfg
+          doGetQemuNet netCfg ["userNetHostFWD",i]    = show $ (userNetHostFWD netCfg)!!(read i)
+          doGetQemuNet netCfg ("userNetHostFWD":i:xs) = doGetQemuNetFWD ((userNetHostFWD netCfg)!!(read i)) xs
+          doGetQemuNet _      list                    = "not supported"
+
+          doGetQemuNetFWD hostFwdCfg ["hostFWDFamily"]    = show $ hostFWDFamily hostFwdCfg
+          doGetQemuNetFWD hostFwdCfg ["hostFWDHostAddr"]  = show $ hostFWDHostAddr hostFwdCfg
+          doGetQemuNetFWD hostFwdCfg ["hostFWDHostPort"]  = show $ hostFWDHostPort hostFwdCfg
+          doGetQemuNetFWD hostFwdCfg ["hostFWDGuestAddr"] = show $ hostFWDGuestAddr hostFwdCfg
+          doGetQemuNetFWD hostFwdCfg ["hostFWDGuestPort"] = show $ hostFWDGuestPort hostFwdCfg
+          doGetQemuNetFWD _          list                 = "not supported"
+doGetQemu cfg ["qemuSerials"]         = show $ length $ qemuSerials cfg
+doGetQemu cfg ["qemuSerials",index]   = show $ (qemuSerials cfg)!!(read index)
+doGetQemu cfg ["qemuVGA"]             = show $ qemuVGA cfg
+doGetQemu cfg ["qemuVNC"]             = show $ qemuVNC cfg
+doGetQemu _   list                    = "not supported"
+
+doGet tvm name args = do
+    case args of
+        [field] -> withCfg tvm name $ \cfg -> do
+                          let splittedList = splitOn "." field
+                          putStrLn $ doGetQemu cfg splittedList
+	_ -> error $ "usage: tvm get <name> <field>"
 
 doInfo tvm name args = withCfg tvm name $ \cfg -> do
     field "arch  " (qemuArch cfg)
