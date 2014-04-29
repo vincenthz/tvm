@@ -7,15 +7,14 @@
 module Main where
 
 import TVM.Qemu
+import TVM.Opts
 import Data.Data
 import Data.Maybe
 import Data.List
 import Data.List.Split
 import Data.Aeson as DA (encode, eitherDecode)
 import qualified Data.ByteString.Lazy as B
-import System.Environment
 import System.Exit
-import System.Console.GetOpt
 import System.FilePath
 import System.Directory
 import Control.Monad
@@ -28,6 +27,9 @@ import System.Posix.Process (forkProcess, executeFile, getProcessStatus, getProc
 import System.Posix.Files (createNamedPipe, getFileStatus, isNamedPipe)
 
 type Name = String
+
+data StartOpts = StartVNC | StartConsole
+    deriving (Show,Eq)
 
 pidPath tvm name = runningDir tvm </> (name ++ ".pid")
 cfgPath tvm name = configDir tvm </> (name ++ ".cfg")
@@ -63,7 +65,7 @@ getVMPid tvm name = do
                     then do
                         cmdline <- readFile ("/proc/" ++ show pid ++ "/cmdline")
                         if "qemu-" `isPrefixOf` cmdline
-                            then return $ Just pid 
+                            then return $ Just pid
                             else return Nothing
                     else return Nothing
         else return Nothing
@@ -75,7 +77,7 @@ withRunningVM tvm name f = do
         Just pid -> f pid
 
 isRunning tvm name = maybe False (const True) <$> getVMPid tvm name
- 
+
 data TVMConfig = TVMConfig
     { rootDir    :: FilePath
     , diskDir    :: FilePath
@@ -83,95 +85,6 @@ data TVMConfig = TVMConfig
     , consoleDir :: FilePath
     , runningDir :: FilePath
     }
-
-doCreate tvm args =
-    case args of
-        name:[] -> do
-            names <- listCfg tvm
-            when (name `elem` names) $ error ("config " ++ name ++ " already exist")
-            let cfg = defaultQemu
-                    { qemuDrives = [ Disk { diskFile = diskDir tvm </> (name ++ ".dsk"), diskInterface = Just DiskVirtIO, diskMedia = MediaDisk }
-                                   , Disk { diskFile = "isoFile.iso", diskInterface = Nothing, diskMedia = MediaCDROM }
-                                   ]
-                    , qemuNics = [ defaultNic { nicModel = Just "e1000" } ]
-                    , qemuNets = [ NetUser { userNetHostFWD = [ HostFWD Nothing Nothing 4022 Nothing 22 ] } ]
-                    , qemuSerials = [ SerialPipe name ]
-                    }
-            writeCfg tvm name cfg
-        _       -> error "usage: tvm create <name>"
-
-
-doList tvm args = do
-    names <- listCfg tvm
-    forM_ names $ \name -> do
-        pid <- getVMPid tvm name
-        putStrLn (name ++ (maybe " [stopped]" (\p -> "[running pid=" ++ show p ++ "]") pid))
-
-data StartOpts = StartVNC | StartConsole
-    deriving (Show,Eq)
-
-doStart tvm args =
-    case getOpt Permute options args of
-        (o,n,[]  ) -> start o n
-        (_,_,errs) -> ioError (userError (concat errs ++ usageInfo "usage: tvm start [--vnc] <name>" options))
-  where options =
-            [ Option ['v'] ["vnc"] (NoArg StartVNC) "start a vnc viewer"
-            , Option ['c'] ["console"] (NoArg StartConsole) "start the console"
-            ]
-        -- actual start
-        start opts [name] = withCfg tvm name $ \cfg -> do
-            let cmds = toCLI (consoleDir tvm) (diskDir tvm) cfg
-            let pidFile = pidPath tvm name
-            -- it's of course racy..
-            mpid <- getVMPid tvm name
-            when (isJust mpid) $ error (name ++ " is already running")
-
-            prepareSerials cfg
-
-            pid <- forkProcess $ startProcess pidFile cmds
-            _   <- getProcessStatus False False pid
-
-            -- FIXME start a vnc viewer
-            when (StartVNC `elem` opts) $ return ()
-            when (StartConsole `elem` opts) $ doConsole tvm [name]
-            exitSuccess
-        start _ _ = error "usage: tvm start <name>"
-
-        startProcess pidFile (cmd:args) = do
-            pid <- forkProcess $ exec pidFile cmd args
-            _   <- getProcessStatus False False pid
-            exitSuccess
-        exec pidFile cmd args = do
-            myPid <- getProcessID
-            writeFile pidFile (show myPid)
-            putStrLn ("starting qemu as pid: " ++ show myPid)
-            executeFile cmd True args Nothing
-
-        -- check if all serials file are available, and if not create them
-        prepareSerials cfg = mapM_ checkFifos $ concatMap prep $ qemuSerials cfg
-          where prep (SerialPipe path) =
-                    let p = resolveDir (consoleDir tvm) path
-                     in [p ++ ".in", p ++ ".out"]
-                checkFifos path = do
-                    exists <- doesFileExist path
-                    if exists
-                        then do
-                            fstat <- getFileStatus path
-                            if isNamedPipe fstat
-                                then return ()
-                                else error ("serial " ++ path ++ " already exist but is not a fifo")
-                        else createNamedPipe path 0o0700
-
-doStop tvm args = do
-    case args of
-        [name] -> withRunningVM tvm name $ \pid -> do
-                     deletePid tvm name
-                     ec <- rawSystem "kill" [ show pid ]
-                     exitWith ec
-        _ -> error "usage: tvm stop <name>"
-
-doAdd tvm name args = undefined
-doSet tvm name args = undefined
 
 doGetQemu cfg ["qemuArch"]            = show $ qemuArch cfg
 doGetQemu cfg ["qemuMemory"]          = show $ qemuMemory cfg
@@ -214,14 +127,85 @@ doGetQemu cfg ["qemuVGA"]             = show $ qemuVGA cfg
 doGetQemu cfg ["qemuVNC"]             = show $ qemuVNC cfg
 doGetQemu _   list                    = "not supported"
 
-doGet tvm name args = do
-    case args of
-        [field] -> withCfg tvm name $ \cfg -> do
-                          let splittedList = splitOn "." field
-                          putStrLn $ doGetQemu cfg splittedList
-        _ -> error $ "usage: tvm get <name> <field>"
+runProg tvm (CmdCreate name) = do
+    names <- listCfg tvm
+    when (name `elem` names) $ error ("config " ++ name ++ " already exist")
+    let cfg = defaultQemu
+            { qemuDrives = [ Disk { diskFile = diskDir tvm </> (name ++ ".dsk"), diskInterface = Just DiskVirtIO, diskMedia = MediaDisk }
+                           , Disk { diskFile = "isoFile.iso", diskInterface = Nothing, diskMedia = MediaCDROM }
+                           ]
+            , qemuNics = [ defaultNic { nicModel = Just "e1000" } ]
+            , qemuNets = [ NetUser { userNetHostFWD = [ HostFWD Nothing Nothing 4022 Nothing 22 ] } ]
+            , qemuSerials = [ SerialPipe name ]
+            }
+    writeCfg tvm name cfg
 
-doInfo tvm name args = withCfg tvm name $ \cfg -> do
+
+runProg tvm CmdList = do
+    names <- listCfg tvm
+    forM_ names $ \name -> do
+        pid <- getVMPid tvm name
+        putStrLn (name ++ (maybe " [stopped]" (\p -> "[running pid=" ++ show p ++ "]") pid))
+
+runProg tvm (CmdStart withVNC withConsole name) = do
+    withCfg tvm name $ \cfg -> do
+        let cmds = toCLI (consoleDir tvm) (diskDir tvm) cfg
+        let pidFile = pidPath tvm name
+        -- it's of course racy..
+        mpid <- getVMPid tvm name
+        when (isJust mpid) $ error (name ++ " is already running")
+
+        prepareSerials cfg
+
+        pid <- forkProcess $ startProcess pidFile cmds
+        _   <- getProcessStatus False False pid
+
+        -- FIXME start a vnc viewer
+        when withVNC $ return ()
+        when withConsole $ runProg tvm (CmdConsole name)
+        exitSuccess
+  where
+
+        startProcess pidFile (cmd:args) = do
+            pid <- forkProcess $ exec pidFile cmd args
+            _   <- getProcessStatus False False pid
+            exitSuccess
+        exec pidFile cmd args = do
+            myPid <- getProcessID
+            writeFile pidFile (show myPid)
+            putStrLn ("starting qemu as pid: " ++ show myPid)
+            executeFile cmd True args Nothing
+
+        -- check if all serials file are available, and if not create them
+        prepareSerials cfg = mapM_ checkFifos $ concatMap prep $ qemuSerials cfg
+          where prep (SerialPipe path) =
+                    let p = resolveDir (consoleDir tvm) path
+                     in [p ++ ".in", p ++ ".out"]
+                checkFifos path = do
+                    exists <- doesFileExist path
+                    if exists
+                        then do
+                            fstat <- getFileStatus path
+                            if isNamedPipe fstat
+                                then return ()
+                                else error ("serial " ++ path ++ " already exist but is not a fifo")
+                        else createNamedPipe path 0o0700
+
+runProg tvm (CmdStop name) =
+    withRunningVM tvm name $ \pid -> do
+        deletePid tvm name
+        ec <- rawSystem "kill" [ show pid ]
+        exitWith ec
+
+runProg tvm (CmdAdd name) = undefined
+runProg tvm (CmdSet name field) = undefined
+
+runProg tvm (CmdGet name field) =
+    withCfg tvm name $ \cfg -> do
+        let splittedList = splitOn "." field
+        putStrLn $ doGetQemu cfg splittedList
+
+runProg tvm (CmdInfo name) = withCfg tvm name $ \cfg -> do
     field "arch  " (qemuArch cfg)
     field "memory" (qemuMemory cfg)
     field "cpus  " (qemuCPUs cfg)
@@ -235,22 +219,20 @@ doInfo tvm name args = withCfg tvm name $ \cfg -> do
   where field k v = putStrLn (k ++ ": " ++ show v)
         list name l printer = putStrLn name >> mapM_ (\(i,f) -> putStr ("  [" ++ show i ++ "] ") >> printer f) (zip [0..] l)
 
-doConsole tvm args =
-    case args of
-        [name] -> withRunningVM tvm name $ \_ ->
-                  withCfg tvm name $ \cfg -> do
-                      let path = case qemuSerials cfg of
-                                    SerialPipe p:_ -> resolveDir (consoleDir tvm) p ++ ".out"
-                                    []             -> error "no serial defined"
-                      withFile path ReadMode $ \h ->
-                          B.hGetContents h >>= B.putStr 
-                      return ()
-        _ -> error "usage: tvm stop <name>"
+runProg tvm (CmdConsole name) =
+    withRunningVM tvm name $ \_ ->
+        withCfg tvm name $ \cfg -> do
+            let path = case qemuSerials cfg of
+                        SerialPipe p:_ -> resolveDir (consoleDir tvm) p ++ ".out"
+                        []             -> error "no serial defined"
+            withFile path ReadMode $ \h ->
+                B.hGetContents h >>= B.putStr
+            return ()
 
-doCdInsert tvm file args =
+runProg tvm (CmdCdInsert {}) =
     undefined
 
-doCdEject tvm args =
+runProg tvm (CmdCdEject {}) =
     undefined
 
 main = do
@@ -265,22 +247,4 @@ main = do
     dirExist <- doesDirectoryExist (rootDir tvm)
     unless dirExist $ do
         mapM_ createDirectory $ map (flip ($) tvm) [rootDir, configDir, diskDir, consoleDir, runningDir]
-    args <- getArgs
-    case args of
-        "create":xs -> doCreate tvm xs
-        "list":xs   -> doList tvm xs
-        "start":xs  -> doStart tvm xs
-        "stop":xs   -> doStop tvm xs
-        "info":name:xs -> doInfo tvm name xs
-        "cd-insert":file:xs -> doCdInsert tvm file xs
-        "cd-eject":xs -> doCdEject tvm xs
-        "add":name:xs -> doSet tvm name xs
-        "set":name:xs -> doSet tvm name xs
-        "get":name:xs -> doGet tvm name xs
-        "console":xs -> doConsole tvm xs
-        "info":[]  -> error "need a name"
-        "add":[]   -> error "need a name"
-        "set":[]   -> error "need a name"
-        "get":[]   -> error "need a name"
-        _:_        -> error "unknown command"
-        []         -> error "no argument"
+    getOpts >>= runProg tvm
