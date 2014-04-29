@@ -219,7 +219,7 @@ doGet tvm name args = do
         [field] -> withCfg tvm name $ \cfg -> do
                           let splittedList = splitOn "." field
                           putStrLn $ doGetQemu cfg splittedList
-	_ -> error $ "usage: tvm get <name> <field>"
+        _ -> error $ "usage: tvm get <name> <field>"
 
 doInfo tvm name args = withCfg tvm name $ \cfg -> do
     field "arch  " (qemuArch cfg)
@@ -247,6 +247,12 @@ doConsole tvm args =
                       return ()
         _ -> error "usage: tvm stop <name>"
 
+doCdInsert tvm file args =
+    undefined
+
+doCdEject tvm args =
+    undefined
+
 main = do
     home <- getHomeDirectory
     let tvmDir = home </> ".tvm"
@@ -266,6 +272,8 @@ main = do
         "start":xs  -> doStart tvm xs
         "stop":xs   -> doStop tvm xs
         "info":name:xs -> doInfo tvm name xs
+        "cd-insert":file:xs -> doCdInsert tvm file xs
+        "cd-eject":xs -> doCdEject tvm xs
         "add":name:xs -> doSet tvm name xs
         "set":name:xs -> doSet tvm name xs
         "get":name:xs -> doGet tvm name xs
