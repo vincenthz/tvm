@@ -131,8 +131,8 @@ runProg tvm (CmdCreate name) = do
     names <- listCfg tvm
     when (name `elem` names) $ error ("config " ++ name ++ " already exist")
     let cfg = defaultQemu
-            { qemuDrives = [ Disk { diskFile = diskDir tvm </> (name ++ ".dsk"), diskInterface = Just DiskVirtIO, diskMedia = MediaDisk }
-                           , Disk { diskFile = "isoFile.iso", diskInterface = Nothing, diskMedia = MediaCDROM }
+            { qemuDrives = [ Disk { diskFile = Just (diskDir tvm </> (name ++ ".dsk")), diskInterface = Just DiskVirtIO, diskMedia = MediaDisk }
+                           , Disk { diskFile = Nothing, diskInterface = Nothing, diskMedia = MediaCDROM }
                            ]
             , qemuNics = [ defaultNic { nicModel = Just "e1000" } ]
             , qemuNets = [ NetUser { userNetHostFWD = [ HostFWD Nothing Nothing 4022 Nothing 22 ] } ]
@@ -212,7 +212,7 @@ runProg tvm (CmdInfo name) = withCfg tvm name $ \cfg -> do
     field "boot  " (qemuBoot cfg)
     field "vga   " (qemuVGA cfg)
     list "drives" (qemuDrives cfg) $ \disk ->
-        putStrLn ("file=" ++ diskFile disk ++ " if=" ++ show (diskInterface disk) ++ " media=" ++ show (diskMedia disk))
+        putStrLn ("file=" ++ maybe "" id (diskFile disk) ++ " if=" ++ show (diskInterface disk) ++ " media=" ++ show (diskMedia disk))
     list "nics" (qemuNics cfg) (\nic -> putStrLn $ groom nic)
     list "nets" (qemuNets cfg) (\net -> putStrLn $ groom net)
     list "serials" (qemuSerials cfg) (\net -> putStrLn $ groom net)
@@ -229,11 +229,25 @@ runProg tvm (CmdConsole name) =
                 B.hGetContents h >>= B.putStr
             return ()
 
-runProg tvm (CmdCdInsert {}) =
-    undefined
+runProg tvm (CmdCdInsert isofile name) =
+    withCfg tvm name $ \cfg -> do
+        let drives    = qemuDrives cfg
+            newDrives = mapFind (\dsk -> dsk { diskFile = Just isofile }) ((== MediaCDROM) . diskMedia) drives
+        writeCfg tvm name $ cfg { qemuDrives = newDrives }
+  where mapFind _ _         []     = []
+        mapFind f doesApply (x:xs)
+            | doesApply x = f x : mapFind f doesApply xs
+            | otherwise   = x : mapFind f doesApply xs
 
-runProg tvm (CmdCdEject {}) =
-    undefined
+runProg tvm (CmdCdEject name) =
+    withCfg tvm name $ \cfg -> do
+        let drives    = qemuDrives cfg
+            newDrives = mapFind (\dsk -> dsk { diskFile = Nothing }) ((== MediaCDROM) . diskMedia) drives
+        writeCfg tvm name $ cfg { qemuDrives = newDrives }
+  where mapFind _ _         []     = []
+        mapFind f doesApply (x:xs)
+            | doesApply x = f x : mapFind f doesApply xs
+            | otherwise   = x : mapFind f doesApply xs
 
 main = do
     home <- getHomeDirectory

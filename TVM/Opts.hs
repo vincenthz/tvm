@@ -41,14 +41,14 @@ getOpts = execParser (info (parseCArgs <**> helper) idm)
                             <*> nameArg
         cmdStop = CmdStop <$> nameArg
         cmdInfo = CmdInfo <$> nameArg
-        cmdCdInsert = CmdCdInsert <$> option (long "file" <> short 'f' <> metavar "ISOFILE")
+        cmdCdInsert = CmdCdInsert <$> strOption (long "file" <> short 'f' <> metavar "ISOFILE")
                                   <*> nameArg
         cmdCdEject = CmdCdEject <$> nameArg
         cmdAdd = CmdAdd <$> nameArg
         cmdSet = CmdSet <$> nameArg
-                        <*> option (long "field" <> short 'f' <> metavar "FIELD")
+                        <*> strOption (long "field" <> short 'f' <> metavar "FIELD")
         cmdGet = CmdGet <$> nameArg
-                        <*> option (long "field" <> short 'f' <> metavar "FIELD")
+                        <*> strOption (long "field" <> short 'f' <> metavar "FIELD")
         cmdConsole = CmdConsole <$> nameArg
 
         nameArg = argument Just (metavar "NAME")

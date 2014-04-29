@@ -35,7 +35,7 @@ data DiskMedia = MediaDisk | MediaCDROM
     deriving (Show,Read,Eq,Typeable,Data,Generic)
 
 data Disk = Disk
-    { diskFile      :: String
+    { diskFile      :: Maybe String
     , diskInterface :: Maybe DiskInterface
     , diskMedia     :: DiskMedia
     } deriving (Show,Read,Eq,Typeable,Data,Generic)
@@ -179,7 +179,7 @@ toCLI serialDir diskDir qemu =
     concatMap cliNic (qemuNics qemu) ++
     concatMap cliNet (qemuNets qemu) ++
     concatMap cliSerial (qemuSerials qemu)
-  where cliDisk disk     = [ "-drive", kvs [ Just ("file", intercalate ",," $ wordsWhen (== ',') (resolveDir diskDir $ diskFile disk))
+  where cliDisk disk     = [ "-drive", kvs [ (\v -> ("file", intercalate ",," $ wordsWhen (== ',') $ resolveDir diskDir v)) `fmap` diskFile disk
                                            , (\v -> ("if", toCLIArg v)) `fmap` diskInterface disk
                                            , Just ("media", toCLIArg $ diskMedia disk)
                                            ] ]
@@ -200,5 +200,6 @@ toCLI serialDir diskDir qemu =
                               s' -> w : wordsWhen p s''
                                     where (w, s'') = break p s'
 
+resolveDir :: FilePath -> FilePath -> FilePath
 resolveDir rDir path | isAbsolute path = path
                      | otherwise       = rDir </> path
