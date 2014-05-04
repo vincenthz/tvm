@@ -1,9 +1,11 @@
 module TVM.Opts
     ( Command(..)
     , getOpts
+    , commands
     ) where
 
 import Options.Applicative
+import Data.Monoid (mconcat)
 
 data Command =
       CmdCreate { createName :: String }
@@ -17,23 +19,30 @@ data Command =
     | CmdSet { setName :: String, setField :: String }
     | CmdGet { getName :: String, getField :: String }
     | CmdConsole { consoleName :: String }
+    | CmdCheck
+    | CmdHelp
     deriving (Show,Eq)
 
 getOpts :: IO Command
 getOpts = execParser (info (parseCArgs <**> helper) idm)
-  where parseCArgs = subparser
-            (  command "create" (info cmdCreate (progDesc "create a new VM"))
-            <> command "list" (info cmdList (progDesc "list VMs"))
-            <> command "start" (info cmdStart (progDesc "start a VM"))
-            <> command "stop" (info cmdStop (progDesc "stop a VM"))
-            <> command "info" (info cmdInfo (progDesc "info about a VM"))
-            <> command "cd-insert" (info cmdCdInsert (progDesc "cd insert"))
-            <> command "cd-eject" (info cmdCdEject (progDesc "cd eject"))
-            <> command "add" (info cmdAdd (progDesc "add a property or value"))
-            <> command "set" (info cmdSet (progDesc "set a value for a property"))
-            <> command "get" (info cmdGet (progDesc "get a value for a property"))
-            <> command "console" (info cmdConsole (progDesc "connect to the console"))
-            )
+  where parseCArgs = subparser $ mconcat $ map (\(name, v, desc) -> command name (info v (progDesc desc))) commands
+
+commands =
+    [ ("create", cmdCreate, "create a new VM")
+    , ("list", cmdList, "list VMs")
+    , ("start", cmdStart, "start a VM")
+    , ("stop", cmdStop, "stop a VM")
+    , ("info", cmdInfo, "info about a VM")
+    , ("cd-insert", cmdCdInsert, "cd insert")
+    , ("cd-eject", cmdCdEject, "cd eject")
+    , ("add", cmdAdd, "add a property or value")
+    , ("set", cmdSet, "set a value for a property")
+    , ("get", cmdGet, "get a value for a property")
+    , ("console", cmdConsole, "connect to the console")
+    , ("check", pure CmdCheck, "perform check (for debug)")
+    , ("help", pure CmdHelp, "get the help")
+    ]
+  where
         cmdCreate = CmdCreate <$> nameArg
         cmdList = pure CmdList
         cmdStart = CmdStart <$> flag False True (long "vnc" <> short 'v')

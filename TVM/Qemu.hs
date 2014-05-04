@@ -17,13 +17,17 @@ import GHC.Generics
 import Data.Data
 import Data.Maybe
 import Data.List
-import Data.Aeson ()
+import Data.Char (toUpper)
+import Data.Aeson (encode, eitherDecode)
 import Data.Aeson.Types
 import qualified Data.ByteString.Lazy as B
 import System.FilePath
 import System.Directory
 import Control.Monad
 import Control.Applicative
+import Control.DeepSeq
+
+import Data.ByteString.Lazy.UTF8 (toString, fromString)
 
 import System.Process
 
@@ -35,15 +39,15 @@ data DiskMedia = MediaDisk | MediaCDROM
     deriving (Show,Read,Eq,Typeable,Data,Generic)
 
 data Disk = Disk
-    { diskFile      :: Maybe String
-    , diskInterface :: Maybe DiskInterface
-    , diskMedia     :: DiskMedia
+    { diskFile      :: !(Maybe String)
+    , diskInterface :: !(Maybe DiskInterface)
+    , diskMedia     :: !DiskMedia
     } deriving (Show,Read,Eq,Typeable,Data,Generic)
 
 data Nic = Nic
-    { nicModel   :: Maybe String
-    , nicMacAddr :: Maybe String -- FIXME refine type
-    , nicVLAN    :: Maybe Int
+    { nicModel   :: !(Maybe String)
+    , nicMacAddr :: !(Maybe String) -- FIXME refine type
+    , nicVLAN    :: !(Maybe Int)
     } deriving (Show,Read,Eq,Typeable,Data,Generic)
 
 defaultNic :: Nic
@@ -54,19 +58,20 @@ data NetFamily = TCP | UDP
 
 -- hostfwd=[tcp|udp]:[hostaddr]:hostport-[guestaddr]:guestport
 data HostFWD = HostFWD
-    { hostFWDFamily :: Maybe NetFamily
-    , hostFWDHostAddr :: Maybe String
-    , hostFWDHostPort :: Int
-    , hostFWDGuestAddr :: Maybe String
-    , hostFWDGuestPort :: Int
+    { hostFWDFamily    :: !(Maybe NetFamily)
+    , hostFWDHostAddr  :: !(Maybe String)
+    , hostFWDHostPort  :: !Int
+    , hostFWDGuestAddr :: !(Maybe String)
+    , hostFWDGuestPort :: !Int
     } deriving (Show,Read,Eq,Typeable,Data,Generic)
 
 data Net = NetUser
     { userNetHostFWD :: [HostFWD]
     } deriving (Show,Read,Eq,Typeable,Data,Generic)
 
-data Serial = SerialPipe String
-    deriving (Show,Read,Eq,Typeable,Data,Generic)
+data Serial = SerialPipe
+    { serialName :: !String
+    } deriving (Show,Read,Eq,Typeable,Data,Generic)
 
 data VGA = VGA_Standard | VGA_Cirrus | VGA_QXL | VGA_VMWare | VGA_None
     deriving (Show,Read,Eq,Typeable,Data,Generic)
@@ -74,17 +79,21 @@ data VGA = VGA_Standard | VGA_Cirrus | VGA_QXL | VGA_VMWare | VGA_None
 data QemuArch = ArchX86_64 | ArchI386
     deriving (Show,Read,Eq,Typeable,Data,Generic)
 
+data MouseType = MouseNormal | MouseTablet
+    deriving (Show,Read,Eq,Typeable,Data,Generic)
+
 data Qemu = Qemu
-    { qemuArch    :: QemuArch
-    , qemuMemory  :: Int -- in megabytes
-    , qemuCPUs    :: Int
-    , qemuBoot    :: BootOrder
+    { qemuArch    :: !QemuArch
+    , qemuMemory  :: !Int -- in megabytes
+    , qemuCPUs    :: !Int
+    , qemuBoot    :: !BootOrder
     , qemuDrives  :: [Disk]
     , qemuNics    :: [Nic]
     , qemuNets    :: [Net]
     , qemuSerials :: [Serial]
-    , qemuVGA     :: VGA
-    , qemuVNC     :: Maybe Int
+    , qemuVGA     :: !VGA
+    , qemuVNC     :: !(Maybe Int)
+    , qemuMouse   :: !MouseType
     } deriving (Show,Read,Eq,Typeable,Data,Generic)
 
 defaultQemu = Qemu
@@ -98,7 +107,10 @@ defaultQemu = Qemu
     , qemuSerials = []
     , qemuVGA     = VGA_Standard
     , qemuVNC     = Nothing
+    , qemuMouse   = MouseNormal
     }
+
+instance NFData Qemu where
 
 instance ToJSON BootOrder
 instance FromJSON BootOrder
@@ -122,8 +134,75 @@ instance ToJSON VGA
 instance FromJSON VGA
 instance ToJSON QemuArch
 instance FromJSON QemuArch
+instance ToJSON MouseType
+instance FromJSON MouseType
 instance ToJSON Qemu
 instance FromJSON Qemu
+
+parseCfg :: String -> Maybe Qemu
+parseCfg = kvsToCfg . map kv . lines
+  where kv s = case break (== '=') s of
+                    (k,"")    -> error ("parsing cfg: wrong k=v format: " ++ s)
+                    (k,'=':v) -> (strip k, strip v)
+                    (k,_)     -> error ("internal error: break failed")
+
+        strip s = dropSpaces $ reverse $ dropSpaces $ reverse s
+          where dropSpaces = dropWhile (\c -> c == ' ' || c == '\t')
+
+printCfg :: Qemu -> String
+printCfg qemu = unlines $ map unKV $ cfgToKVS qemu
+  where unKV (k,v) = k ++ " = " ++ v
+
+cfgToKVS :: Qemu -> [(String, String)]
+cfgToKVS (Qemu arch mem cpu boot drives nics nets serials vga vnc mouse) =
+    [ ("arch", toCLIArg arch)
+    , ("memory", show mem)
+    , ("cpu", show cpu)
+    , ("boot", drop 4 $ show boot)
+    , ("vga", drop 4 $ show vga)
+    , ("mouse", drop 5 $ show mouse)
+    ]
+    ++ mapi driveToKVs drives
+    ++ mapi nicToKVs nics
+    ++ mapi netToKVs nets
+    ++ mapi serialToKVs serials
+    ++ maybe [] (\port -> [ ("vnc", show port) ]) vnc
+  where driveToKVs (i, drive)   = ("disk" ++ show i, toString $ encode drive)
+        nicToKVs (i, nic)       = ("nic" ++ show i, toString $ encode nic)
+        netToKVs (i, net)       = ("net" ++ show i, toString $ encode net)
+        serialToKVs (i, serial) = ("serial" ++ show i, toString $ encode serial)
+        mapi :: ((Int, a) -> (String, String)) -> [a] -> [(String, String)]
+        mapi f l = map f $ zip [0..] l
+
+kvsToCfg :: [(String, String)] -> Maybe Qemu
+kvsToCfg kvs =
+    case sequence $ map (flip lookup kvs) ["arch", "memory", "cpu", "boot", "vga"] of
+        Nothing                             -> Nothing
+        Just [arch, memory, cpu, boot, vga] ->
+            Just $ Qemu { qemuArch   = read ("Arch" ++ map toUpper arch)
+                        , qemuMemory = read memory
+                        , qemuCPUs   = read cpu
+                        , qemuBoot   = read ("Boot" ++ capitalize boot)
+                        , qemuVGA    = read ("VGA_" ++ capitalize vga)
+                        , qemuDrives = readPrefixI "disk"
+                        , qemuNics   = readPrefixI "nic"
+                        , qemuNets   = readPrefixI "net"
+                        , qemuSerials= readPrefixI "serial"
+                        , qemuVNC    = read <$> lookup "vnc" kvs
+                        , qemuMouse  = maybe MouseNormal id $ fmap (\v -> read ("Mouse" ++ capitalize v)) $ lookup "mouse" kvs
+                        }
+        Just _ -> error "internal error in kvsToCfg"
+  where capitalize []     = []
+        capitalize (x:xs) = toUpper x : xs
+
+        readPrefixI :: FromJSON a => String -> [a]
+        readPrefixI pre = loop 0
+          where loop :: FromJSON a => Int -> [a]
+                loop i = case lookup (pre ++ show i) kvs of
+                            Nothing -> []
+                            Just s  -> case eitherDecode $ fromString s of
+                                            Left err -> error ("decoding " ++ pre ++ show i ++ ":" ++ err)
+                                            Right v  -> v : loop (i+1)
 
 class ShowArg a where
     toCLIArg :: a -> String
@@ -175,6 +254,7 @@ toCLI serialDir diskDir qemu =
     ["-m", show (qemuMemory qemu)] ++
     ["-smp", show (qemuCPUs qemu)] ++
     ["-boot", toCLIArg (qemuBoot qemu)] ++
+    cliMouse (qemuMouse qemu) ++
     concatMap cliDisk (qemuDrives qemu) ++
     concatMap cliNic (qemuNics qemu) ++
     concatMap cliNet (qemuNets qemu) ++
@@ -188,7 +268,11 @@ toCLI serialDir diskDir qemu =
                                                        , (\v -> ("vlan", show v)) `fmap` nicVLAN nic
                                                        , (\v -> ("macaddr", v)) `fmap` nicMacAddr nic
                                                        ] ]
+        cliMouse MouseNormal = []
+        cliMouse MouseTablet = ["-usbdevice", "tablet"]
+
         cliSerial (SerialPipe p) = [ "-serial", "pipe:" ++ (resolveDir serialDir p) ]
+
         kvs l = intercalate "," $ map (\(k,v) -> k ++ "=" ++ v) $ catMaybes l
 
         comma s v | null v    = s

@@ -4,6 +4,7 @@
 --
 -- Tiny VM Manager
 --
+{-# LANGUAGE ScopedTypeVariables #-}
 module Main where
 
 import TVM.Qemu
@@ -19,6 +20,8 @@ import System.FilePath
 import System.Directory
 import Control.Monad
 import Control.Applicative
+import Control.DeepSeq
+import qualified Control.Exception as E
 import Text.Groom
 
 import System.IO
@@ -34,16 +37,19 @@ data StartOpts = StartVNC | StartConsole
 pidPath tvm name = runningDir tvm </> (name ++ ".pid")
 cfgPath tvm name = configDir tvm </> (name ++ ".cfg")
 
-readCfg :: TVMConfig -> Name -> IO (Maybe Qemu)
-readCfg tvm name = do
+readCfgOld :: TVMConfig -> Name -> IO (Maybe Qemu)
+readCfgOld tvm name = do
     d <- (DA.eitherDecode <$> B.readFile (cfgPath tvm name)) :: IO (Either String Qemu)
     case d of
       Left err -> error $ "JSON error (" ++ (cfgPath tvm name) ++ "): " ++ err
-      Right ps -> return $ Just ps
+      Right ps -> return $ Just $ deepseq ps ps
 
-withCfg tvm name f = readCfg tvm name >>= maybe (return $ error ("cannot open config : " ++ name)) f
+readCfg :: TVMConfig -> Name -> IO (Maybe Qemu)
+readCfg tvm name = parseCfg <$> readFile (cfgPath tvm name)
 
-writeCfg tvm name config = B.writeFile (cfgPath tvm name) (DA.encode config)
+withCfg tvm name f = readCfg tvm name >>= maybe (return $ error ("cannot open config : " ++ name)) (\c -> f $! c)
+
+writeCfg tvm name config = writeFile (cfgPath tvm name) (printCfg config)
 
 listCfg tvm = do
     files <- filter (isSuffixOf ".cfg") <$> getDirectoryContents (configDir tvm)
@@ -211,6 +217,7 @@ runProg tvm (CmdInfo name) = withCfg tvm name $ \cfg -> do
     field "cpus  " (qemuCPUs cfg)
     field "boot  " (qemuBoot cfg)
     field "vga   " (qemuVGA cfg)
+    field "mouse " (qemuMouse cfg)
     list "drives" (qemuDrives cfg) $ \disk ->
         putStrLn ("file=" ++ maybe "" id (diskFile disk) ++ " if=" ++ show (diskInterface disk) ++ " media=" ++ show (diskMedia disk))
     list "nics" (qemuNics cfg) (\nic -> putStrLn $ groom nic)
@@ -248,6 +255,25 @@ runProg tvm (CmdCdEject name) =
         mapFind f doesApply (x:xs)
             | doesApply x = f x : mapFind f doesApply xs
             | otherwise   = x : mapFind f doesApply xs
+
+runProg tvm CmdCheck = do
+    names <- listCfg tvm
+    forM_ names $ \name -> do
+        -- upgrade old configs
+        mcfg <- try $ readCfgOld tvm name
+        case mcfg of
+            Just cfg -> putStrLn ("upgrading: " ++ name) >> writeCfg tvm name cfg
+            _        -> do
+                mcfg2 <- readCfg tvm name
+                case mcfg2 of
+                    Nothing -> putStrLn ("cannot read config for : " ++ name)
+                    Just _  -> return ()
+  where try f = either (\(_:: E.SomeException) -> Nothing) id <$> E.try f
+
+runProg tvm CmdHelp = do
+    putStrLn "usage: tvm <command>"
+    putStrLn ""
+    mapM_ (\(k, _, desc) -> putStrLn ("  " ++ k ++ ": " ++ desc)) commands
 
 main = do
     home <- getHomeDirectory
